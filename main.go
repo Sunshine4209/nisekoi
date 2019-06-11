@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 
-	"github.com/Ruenzuo/nisekoi/calc"
-	"github.com/Ruenzuo/nisekoi/utils"
+	"./calc"
+	"./utils"
 
 	"gopkg.in/urfave/cli.v1"
 )

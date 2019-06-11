@@ -3,12 +3,13 @@ package calc
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"strings"
-	"sync"
-
 	"github.com/google/go-github/github"
 	"golang.org/x/oauth2"
+	"net/http"
+	"projects/cal"
+	"strings"
+	"sync"
+	"time"
 )
 
 type Cmd struct {
@@ -30,6 +31,8 @@ type Result struct {
 }
 
 func (cmd Cmd) Run() error {
+	calendar := cal.NewCalendar()
+
 	ctx := context.Background()
 	var tc *http.Client
 	if len(cmd.AccessToken) != 0 {
@@ -57,7 +60,7 @@ func (cmd Cmd) Run() error {
 		wg.Add(1)
 		go func(val Repository) {
 			if cmd.Debug {
-				fmt.Printf("Executing goroutine for value: %s", val.Name)
+				fmt.Printf("Executing goroutine for value: %s\n", val.Name)
 			}
 			pullRequests, err := getPullRequests(ctx, client, val)
 			c <- Result{PullRequests: pullRequests, Err: err}
@@ -80,19 +83,40 @@ func (cmd Cmd) Run() error {
 		}
 		for _, pullRequest := range pullRequests {
 			prAccumulator++
-			if pullRequest.GetMergedAt().IsZero() {
-				continue
-			}
 			if len(cmd.Username) != 0 {
 				if !strings.EqualFold(pullRequest.GetUser().GetLogin(), cmd.Username) {
 					continue
 				}
 				userPrAccumulator++
 			}
-			delta := pullRequest.GetMergedAt().Sub(pullRequest.GetCreatedAt()).Hours()
-			timeAccumulator += delta
-			if cmd.Debug {
-				fmt.Printf("PR: %s\nCreated at: %v\nMerged at:%v\nDelta in hours: %f\n", pullRequest.GetTitle(), pullRequest.GetCreatedAt(), pullRequest.GetMergedAt(), delta)
+
+			createWorkday := pullRequest.GetCreatedAt().Weekday();
+			who := pullRequest.GetUser().GetLogin()
+			state := pullRequest.GetState()
+
+			if pullRequest.GetMergedAt().IsZero() {
+				if cmd.Debug {
+					fmt.Printf("%v PR: %s\nCreated by  : %v\n", state, pullRequest.GetTitle(), who)
+					fmt.Printf("Created on a : %v %v\n\n", createWorkday, pullRequest.GetCreatedAt())
+				}
+			} else {
+
+				mergeWorkday := pullRequest.GetMergedAt().Weekday();
+				whoMerge := pullRequest.GetMergedBy().GetLogin();
+				workdays := calendar.CountWorkdays(pullRequest.GetCreatedAt(), pullRequest.GetMergedAt())
+
+				delta := float64(0)
+				if float64(workdays * 24) < pullRequest.GetMergedAt().Sub(pullRequest.GetCreatedAt()).Hours() {
+					delta = float64(workdays * 24)
+				} else {
+					delta = pullRequest.GetMergedAt().Sub(pullRequest.GetCreatedAt()).Hours()
+				}
+				timeAccumulator += delta
+
+				if cmd.Debug {
+					fmt.Printf("%v PR: %s\nCreated by: %v\nCreated on a: %v\nMerged on a: %v\nMerged by  : %v\n", state, pullRequest.GetTitle(), who, createWorkday, mergeWorkday, whoMerge)
+					fmt.Printf("Created on a : %v\nMerged at:%v\nDelta in hours: %f \ntotal woking days PR was open %d \n\n", pullRequest.GetCreatedAt(), pullRequest.GetMergedAt(), delta, workdays)
+				}
 			}
 		}
 	}
@@ -103,7 +127,7 @@ func (cmd Cmd) Run() error {
 		userLanded = fmt.Sprintf("%d out of ", userPrAccumulator)
 		average = timeAccumulator / float64(userPrAccumulator)
 	}
-	fmt.Printf("Average landing PR time is: %.2f hours, for a total of %s%d landed PRs\n", average, userLanded, prAccumulator)
+	fmt.Printf("Average landing PR time is: %.2f hours, for a total of %s%d landed PRs\n\n", average, userLanded, prAccumulator)
 
 	return cmdErr
 }
@@ -111,7 +135,7 @@ func (cmd Cmd) Run() error {
 func getPullRequests(ctx context.Context, client *github.Client, repository Repository) ([]*github.PullRequest, error) {
 	opt := &github.PullRequestListOptions{
 		ListOptions: github.ListOptions{PerPage: 100},
-		State:       "closed",
+		State:       "all",
 	}
 
 	var apiResponse []*github.PullRequest
@@ -120,7 +144,13 @@ func getPullRequests(ctx context.Context, client *github.Client, repository Repo
 		if err != nil {
 			return nil, err
 		}
-		apiResponse = append(apiResponse, pullRequests...)
+
+		for _, pullRequest := range pullRequests {
+			if pullRequest.GetCreatedAt().After(time.Date(2019, time.January, 1, 0, 0, 0, 0, time.UTC)) {
+				apiResponse = append(apiResponse, pullRequest)
+			}
+		}
+
 		if resp.NextPage == 0 {
 			break
 		}
